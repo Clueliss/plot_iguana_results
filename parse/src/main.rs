@@ -9,17 +9,15 @@ use rio_api::{
 use std::{
     fs::File,
     io::{BufReader, BufWriter, Write},
-    path::Path,
 };
-use std::collections::{BTreeMap, HashMap, HashSet};
-use std::hash::BuildHasherDefault;
+use std::collections::BTreeMap;
 
 type QId = u32;
 type RunId = u32;
 
 fn swdf() -> std::io::Result<()> {
     let qid_regex =
-        Regex::new(r#"^http://iguana-benchmark\.eu/resource/(?P<run>[0-9]+)/[0-9]+/[0-9]/0/sparql(?P<qid>[0-9]+)$"#)
+        Regex::new(r#"^http://iguana-benchmark\.eu/resource/(?P<run>[0-9]+)/1/(?P<qid>[0-9]+)/0/sparql0$"#)
             .unwrap();
 
     const FILES: [(&str, &str); 4] = [
@@ -50,17 +48,17 @@ fn swdf() -> std::io::Result<()> {
     for (triplestore, path) in FILES {
         let f = BufReader::new(File::open(path)?);
 
-        let mut failed = 0;
-        let mut triples = Vec::new();
+        let mut failed: BTreeMap<RunId, usize> = Default::default();
+        let mut qpss: BTreeMap<QId, Vec<f64>> = Default::default();
 
         rio_turtle::NTriplesParser::new(f).parse_all::<std::io::Error>(&mut |triple| {
             let Subject::NamedNode(NamedNode { iri }) = triple.subject else {
                 panic!();
             };
 
-            let Some(id) = qid_regex.captures(iri).and_then(|caps| {
-                let qid = caps.name("qid")?.as_str().parse::<u32>().ok()?;
-                let run = caps.name("run")?.as_str().parse::<u32>().ok()?;
+            let Some((qid, run)) = qid_regex.captures(iri).and_then(|caps| {
+                let qid = caps.name("qid")?.as_str().parse::<QId>().ok()?;
+                let run = caps.name("run")?.as_str().parse::<RunId>().ok()?;
 
                 Some((qid, run))
             }) else {
@@ -75,14 +73,18 @@ fn swdf() -> std::io::Result<()> {
                         panic!();
                     };
 
-                    failed += f.parse::<usize>().unwrap();
+                    *failed.entry(run).or_default() += f.parse::<usize>().unwrap();
                 }
                 "http://iguana-benchmark.eu/properties/QPS" => {
                     let Term::Literal(Literal::Typed { value: qps, datatype: NamedNode { iri: "http://www.w3.org/2001/XMLSchema#double" } }) = triple.object else {
                         panic!();
                     };
 
-                    triples.push((id, qps.parse::<f64>().unwrap()));
+                    let qps = qps.parse::<f64>().unwrap();
+
+                    qpss.entry(qid)
+                        .or_default()
+                        .push(qps);
                 }
                 _ => return Ok(()),
             }
@@ -90,16 +92,117 @@ fn swdf() -> std::io::Result<()> {
             Ok(())
         })?;
 
-        triples.sort_unstable_by_key(|(q, _)| *q);
+        let avg_failed = failed.values().sum::<usize>() as f64 / failed.len() as f64;
+        writeln!(failed_bw, "{triplestore},{avg_failed}")?;
 
-        writeln!(failed_bw, "{triplestore},{failed}")?;
+        let qpss: Vec<_> = qpss.into_iter()
+            .map(|(qid, qpss)| {
+                let avg_qps = qpss.iter().sum::<f64>() / qpss.len() as f64;
 
-        for (_run, chunk) in triples.chunks(30).enumerate() {
-            for (p, data) in chunk.chunks(3).enumerate() {
-                let avg_qps = data.iter().map(|(_, qps)| qps).sum::<f64>() / data.len() as f64;
+                (qid, avg_qps)
+            })
+            .collect();
 
-                writeln!(qps_bw, "{triplestore},{percentage},{avg_qps}", percentage = (p + 1) * 10,)?;
+        for (p, variants) in qpss.chunks(3).enumerate() {
+            let avg_qps = variants.iter().map(|(_, qps)| qps).sum::<f64>() / variants.len() as f64;
+            writeln!(qps_bw, "{triplestore},{percentage},{avg_qps}", percentage = (p + 1) * 10)?;
+        }
+    }
+
+    Ok(())
+}
+
+fn dbpedia_fixed() -> std::io::Result<()> {
+    let qid_regex =
+        Regex::new(r#"^http://iguana-benchmark\.eu/resource/(?P<run>[0-9]+)/1/(?P<qid>[0-9]+)/0/sparql0$"#)
+            .unwrap();
+
+    const FILES: [(&str, &str); 4] = [
+        (
+            "Blazegraph",
+            "/home/liss/Dokumente/Benchmarking/dbpedia-fixed/results_blazegraph-dbpedia2015-fixed.nt",
+        ),
+        (
+            "Fuseki",
+            "/home/liss/Dokumente/Benchmarking/dbpedia-fixed/results_fuseki-dbpedia2015-fixed.nt",
+        ),
+        (
+            "GraphDB",
+            "/home/liss/Dokumente/Benchmarking/dbpedia-fixed/results_graphdb-dbpedia2015-fixed.nt",
+        ),
+        (
+            "Tentris",
+            "/home/liss/Dokumente/Benchmarking/dbpedia-fixed/results_tentris-1.3.0-entry-removal-dbpedia2015-fixed.nt",
+        ),
+    ];
+
+    let mut qps_bw = BufWriter::new(File::create("results_dbpedia-fixed-qps.csv")?);
+    writeln!(qps_bw, "Triplestore,Percentage,QpS")?;
+
+    let mut failed_bw = BufWriter::new(File::create("results_dbpedia-fixed-failed.csv")?);
+    writeln!(failed_bw, "Triplestore,Failed")?;
+
+    for (triplestore, path) in FILES {
+        let f = BufReader::new(File::open(path)?);
+
+        let mut failed: BTreeMap<RunId, usize> = Default::default();
+        let mut qpss: BTreeMap<QId, Vec<f64>> = Default::default();
+
+        rio_turtle::NTriplesParser::new(f).parse_all::<std::io::Error>(&mut |triple| {
+            let Subject::NamedNode(NamedNode { iri }) = triple.subject else {
+                panic!();
+            };
+
+            let Some((qid, run)) = qid_regex.captures(iri).and_then(|caps| {
+                let qid = caps.name("qid")?.as_str().parse::<QId>().ok()?;
+                let run = caps.name("run")?.as_str().parse::<RunId>().ok()?;
+
+                Some((qid, run))
+            }) else {
+                return Ok(());
+            };
+
+            let NamedNode { iri: predicate_iri } = triple.predicate;
+
+            match predicate_iri {
+                "http://iguana-benchmark.eu/properties/failed" => {
+                    let Term::Literal(Literal::Typed { value: f, datatype: NamedNode { iri: "http://www.w3.org/2001/XMLSchema#long" } }) = triple.object else {
+                        panic!();
+                    };
+
+                    *failed.entry(run).or_default() += f.parse::<usize>().unwrap();
+                }
+                "http://iguana-benchmark.eu/properties/QPS" => {
+                    let Term::Literal(Literal::Typed { value: qps, datatype: NamedNode { iri: "http://www.w3.org/2001/XMLSchema#double" } }) = triple.object else {
+                        panic!();
+                    };
+
+                    let qps = qps.parse::<f64>().unwrap();
+
+                    qpss.entry(qid)
+                        .or_default()
+                        .push(qps);
+                }
+                _ => return Ok(()),
             }
+
+            Ok(())
+        })?;
+
+        let avg_failed = failed.values().sum::<usize>() as f64 / failed.len() as f64;
+        writeln!(failed_bw, "{triplestore},{avg_failed}")?;
+
+        let qpss: Vec<_> = qpss.into_iter()
+            .map(|(qid, qpss)| {
+                let avg_qps = qpss.iter().sum::<f64>() / qpss.len() as f64;
+
+                (qid, avg_qps)
+            })
+            .collect();
+
+        for (p, variants) in qpss.chunks(3).enumerate() {
+            let avg_qps = variants.iter().map(|(_, qps)| qps).sum::<f64>() / variants.len() as f64;
+            writeln!(qps_bw, "{triplestore},{percentage},{avg_qps}", percentage = (p + 1) * 10)?;
         }
     }
 
@@ -146,7 +249,7 @@ fn dbpedia() -> std::io::Result<()> {
     writeln!(qps_zoom_bw, "Triplestore,Query,QpS")?;
 
     for (triplestore, path) in FILES {
-        let mut failed: usize = 0;
+        let mut failed: BTreeMap<RunId, usize> = Default::default();
         let mut qpss: BTreeMap<QId, Vec<f64>> = Default::default();
 
         rio_turtle::NTriplesParser::new(BufReader::new(File::open(path)?)).parse_all::<std::io::Error>(&mut |triple| {
@@ -154,11 +257,11 @@ fn dbpedia() -> std::io::Result<()> {
                 panic!();
             };
 
-            let Some(qid) = qid_regex.captures(iri).and_then(|caps| {
-                let qid = caps.name("qid")?.as_str().parse::<u32>().ok()?;
-                let _ = caps.name("run")?;
+            let Some((qid, run)) = qid_regex.captures(iri).and_then(|caps| {
+                let qid = caps.name("qid")?.as_str().parse::<QId>().ok()?;
+                let run = caps.name("run")?.as_str().parse::<RunId>().ok()?;
 
-                Some(qid)
+                Some((qid, run))
             }) else {
                 return Ok(());
             };
@@ -171,7 +274,7 @@ fn dbpedia() -> std::io::Result<()> {
                         panic!();
                     };
 
-                    failed += f.parse::<usize>().unwrap();
+                    *failed.entry(run).or_default() += f.parse::<usize>().unwrap();
                 }
                 "http://iguana-benchmark.eu/properties/QPS" => {
                     let Term::Literal(Literal::Typed { value: qps, datatype: NamedNode { iri: "http://www.w3.org/2001/XMLSchema#double" } }) = triple.object else {
@@ -201,7 +304,7 @@ fn dbpedia() -> std::io::Result<()> {
             })
             .sum::<f64>() / qpss.len() as f64;
 
-        println!("run to run variance: {avg_rtr_variance}");
+        println!("{triplestore} run to run standard deviation: {}", avg_rtr_variance.sqrt());
 
         let qpss: Vec<_> = qpss.into_iter()
             .map(|(qid, qpss)| {
@@ -212,7 +315,8 @@ fn dbpedia() -> std::io::Result<()> {
             })
             .collect();
 
-        writeln!(failed_bw, "{triplestore},{failed}")?;
+        let avg_failed = failed.values().sum::<usize>() as f64 / failed.len() as f64;
+        writeln!(failed_bw, "{triplestore},{avg_failed}")?;
 
         for (qid, qps) in qpss.iter() {
             writeln!(qps_all_bw, "{triplestore},{qid},{qps}")?;
@@ -249,6 +353,7 @@ fn dbpedia() -> std::io::Result<()> {
 fn main() -> std::io::Result<()> {
     swdf()?;
     dbpedia()?;
+    dbpedia_fixed()?;
 
     Ok(())
 }

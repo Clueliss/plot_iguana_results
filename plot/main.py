@@ -24,10 +24,38 @@ def swdf_failed():
         + aes(x="Triplestore", y="Failed", fill="Triplestore") \
         + geom_bar(stat="identity", show_legend=False) \
         + ylab("No. Failed Q") \
-        + ylim(0, 40) \
-        + ggtitle("SWDF Failed Queries")
+        + ylim(0, 20) \
+        + ggtitle("SWDF Run Average of Failed Queries")
 
     plot.save("swdf_failed.png")
+
+
+def dbpedia_fixed_avg_qps():
+    path = "/home/liss/Development/plot_iguana_results/parse/results_dbpedia-fixed-qps.csv"
+    dataset = pd.read_csv(path)
+
+    plot = ggplot(dataset) \
+          + aes(x="reorder(Percentage, list(reversed(QpS)))", y="QpS", fill="Triplestore") \
+          + geom_col(stat="identity", position="dodge") \
+          + xlab("Percentage of SWDF Removed") \
+          + ylab("Average QpS") \
+          + ggtitle("DBpedia Fixed Size Queries Average QpS")
+
+    plot.save("dbpedia-fixed_avg_qps.png")
+
+
+def dbpedia_fixed_failed():
+    path = "/home/liss/Development/plot_iguana_results/parse/results_dbpedia-fixed-failed.csv"
+    dataset = pd.read_csv(path)
+
+    plot = ggplot(dataset) \
+        + aes(x="Triplestore", y="Failed", fill="Triplestore") \
+        + geom_bar(stat="identity", show_legend=False) \
+        + ylab("No. Failed Q") \
+        + ylim(0, 20) \
+        + ggtitle("DBpedia Fixed Size Queries Run Average of Failed Queries")
+
+    plot.save("dbpedia-fixed_failed.png")
 
 
 def dbpedia_failed():
@@ -38,8 +66,8 @@ def dbpedia_failed():
         + aes(x="Triplestore", y="Failed", fill="Triplestore") \
         + geom_bar(stat="identity", show_legend=False) \
         + ylab("No. Failed Q") \
-        + ylim(0, 40) \
-        + ggtitle("DBpedia Failed Queries")
+        + ylim(0, 20) \
+        + ggtitle("DBpedia Run Average Failed Queries")
 
     plot.save("dbpedia_failed.png")
 
@@ -73,7 +101,7 @@ def dbpedia_avg_qps_no_warmup():
            + scale_y_log10() \
            + xlab("Triplestore") \
            + ylab("QpS") \
-           + ggtitle("DBpedia Average QpS")
+           + ggtitle("DBpedia Average QpS but Warmup removed")
 
     plot.save("dbpedia_avg_qps_no_warmup.png")
 
@@ -119,3 +147,6 @@ dbpedia_qps()
 dbpedia_avg_qps()
 dbpedia_avg_qps_no_warmup()
 dbpedia_warmup_qps()
+
+dbpedia_fixed_avg_qps()
+dbpedia_fixed_failed()
